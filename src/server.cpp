@@ -1,12 +1,22 @@
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <sstream>
 #include <cstring>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+
+/**
+ * Returns the line defined by the delimiter
+ */
+std::string readLine(std::string &message, const std::string &delimiter = "\r\n")
+{
+  char *p = strtok(message.data(), delimiter.c_str());
+  return (p != nullptr) ? p : message.data();
+}
 
 int main(int argc, char **argv)
 {
@@ -56,11 +66,62 @@ int main(int argc, char **argv)
   int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
   std::cout << "Client connected\n";
 
-  std::string response_ok = "HTTP/1.1 200 OK\r\n\r\n";
-
-  if (send(client_fd, response_ok.c_str(), response_ok.size(), 0) == -1)
+  char msg_client[128] = "";
+  int msg_client_length = sizeof(msg_client);
+  bzero(&msg_client, msg_client_length);
+  if (recv(client_fd, &msg_client, msg_client_length, 0) == -1)
   {
-    std::cout << "Couldn't send response\n";
+    std::cout << "Couldn't receive response\n";
+    close(server_fd);
+    return 0;
+  }
+
+  std::string msg_manipulator = msg_client;
+
+  std::string request_line = readLine(msg_manipulator); // GET /abcdefg HTTP/1.1
+  if (request_line.empty())
+  {
+    std::cout << "Couldn't read a line\n";
+  }
+  else
+  {
+    std::cout << "Here is the line: " << request_line << "\n";
+  }
+
+  std::string response_ok = "HTTP/1.1 200 OK\r\n\r\n";
+  std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n\r\n";
+
+  bool get_found = false;
+  std::string temp = request_line;
+  std::size_t pos = temp.find(" ");
+  while (pos != std::string::npos)
+  {
+    std::string word = temp.substr(0, pos);
+    if (word == "GET")
+    {
+      get_found = true;
+    }
+    else if (get_found)
+    {
+      if (word == "/")
+      {
+        if (send(client_fd, response_ok.c_str(), response_ok.size(), 0) == -1)
+        {
+          std::cout << "Couldn't send response\n";
+        }
+      }
+      else
+      {
+        if (send(client_fd, response_not_ok.c_str(), response_not_ok.size(), 0) == -1)
+        {
+          std::cout << "Couldn't send response\n";
+        }
+      }
+      break;
+    }
+
+    temp = temp.substr(pos + 1, temp.size() - pos);
+    pos = temp.find(" ");
   }
 
   close(server_fd);

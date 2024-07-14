@@ -18,6 +18,15 @@ std::string readLine(std::string &message, const std::string &delimiter = "\r\n"
   return (p != nullptr) ? p : message.data();
 }
 
+std::string writeHeaders(int size_payload)
+{
+  std::string headers;
+  headers += "Content-Type: text/plain\r\nContent-Length: ";
+  headers += std::to_string(size_payload);
+  headers += "\r\n\r\n";
+  return headers;
+}
+
 int main(int argc, char **argv)
 {
   // Flush after every std::cout / std::cerr
@@ -83,13 +92,10 @@ int main(int argc, char **argv)
   {
     std::cout << "Couldn't read a line\n";
   }
-  else
-  {
-    std::cout << "Here is the line: " << request_line << "\n";
-  }
 
-  std::string response_ok = "HTTP/1.1 200 OK\r\n\r\n";
-  std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n\r\n";
+  std::string response_ok = "HTTP/1.1 200 OK\r\n";
+  std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n";
+  std::string end_response = "\r\n";
 
   bool get_found = false;
   std::string temp = request_line;
@@ -105,16 +111,31 @@ int main(int argc, char **argv)
     {
       if (word == "/")
       {
-        if (send(client_fd, response_ok.c_str(), response_ok.size(), 0) == -1)
+        std::string response = response_ok + end_response;
+        if (send(client_fd, response.c_str(), response.size(), 0) == -1)
         {
           std::cout << "Couldn't send response\n";
         }
       }
       else
       {
-        if (send(client_fd, response_not_ok.c_str(), response_not_ok.size(), 0) == -1)
+        std::string path_echo = "/echo/";
+        if (std::size_t pos2 = word.find(path_echo) != std::string::npos)
         {
-          std::cout << "Couldn't send response\n";
+          std::string answer = word.substr(path_echo.size(), word.size() - path_echo.size());
+          std::string response = response_ok + writeHeaders(answer.size()) + answer;
+          if (send(client_fd, response.c_str(), response.size(), 0) == -1)
+          {
+            std::cout << "Couldn't send response\n";
+          }
+        }
+        else
+        {
+          std::string response = response_not_ok + end_response;
+          if (send(client_fd, response.c_str(), response.size(), 0) == -1)
+          {
+            std::cout << "Couldn't send response\n";
+          }
         }
       }
       break;

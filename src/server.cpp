@@ -165,13 +165,13 @@ Request read_request(std::string &message)
 
 void handle_endpoint_error(int client_fd, std::string &message, Request &request)
 {
-  std::string response = response_NOT_OK + writeHeaders();
+  std::string response = response_NOT_OK + response_HEADER_END;
   sendResponse(client_fd, response);
 }
 
 void handle_endpoint_root(int client_fd, std::string &message, Request &request)
 {
-  std::string response = response_OK + writeHeaders();
+  std::string response = response_OK + response_HEADER_END;
   sendResponse(client_fd, response);
 }
 

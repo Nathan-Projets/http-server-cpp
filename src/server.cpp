@@ -60,19 +60,28 @@ std::string readLine(std::string &message, const std::string &delimiter = "\r\n"
 std::string searchLine(std::string message, std::string search_term, const std::string &delimiter = "\r\n")
 {
   to_lower(search_term);
-  char *p = strtok(message.data(), delimiter.c_str());
-  while (p != nullptr)
+  std::string lower_case_message = message;
+  to_lower(lower_case_message);
+
+  std::size_t pos_term = lower_case_message.find(search_term);
+  if (pos_term != std::string::npos)
   {
-    std::string word(p);
-    std::string word_search(p);
-    to_lower(word_search);
-    if (word_search.find(search_term) != std::string::npos)
+    std::size_t pos_end_value = lower_case_message.find(delimiter, pos_term);
+    if (pos_end_value != std::string::npos)
     {
-      return word.substr(search_term.size(), word.size() - search_term.size());
+      std::string result = message.substr(pos_term + search_term.size(), pos_end_value - pos_term + search_term.size());
+      std::size_t pos_specials = result.find(delimiter);
+      while (pos_specials != std::string::npos)
+      {
+        result.erase(pos_specials, delimiter.size());
+        pos_specials = result.find(delimiter);
+      }
+      result.erase(result.begin(), std::find_if(result.begin(), result.end(), [](unsigned char ch)
+                                                { return !std::isspace(ch); }));
+      return result;
     }
-    message.erase(0, word.size() + delimiter.size());
-    p = strtok(message.data(), delimiter.c_str());
   }
+
   return "";
 }
 
@@ -188,13 +197,15 @@ void handle_endpoint_echo(int client_fd, std::string &message, Request &request)
 
 void handle_endpoint_user_agent(int client_fd, std::string &message, Request &request)
 {
-  std::string search_term_user = "User-Agent: ";
+  std::string search_term_user = "User-Agent:";
   std::string payload = searchLine(message, search_term_user);
   std::string response = response_NOT_OK + response_HEADER_END;
   if (not payload.empty())
   {
     response = response_OK + writeHeaders(payload.size()) + payload;
   }
+  std::cout << "Message: " << message << "\n";
+  std::cout << "handle user agent sending: " << response << "\n";
   sendResponse(client_fd, response);
 }
 

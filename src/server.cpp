@@ -48,6 +48,21 @@ void to_lower(std::string &str)
                  { return std::tolower(c); });
 }
 
+// This is needed because for god knows why codecrafters decided to include null characters in their test cases
+std::string removeNullCharacters(const std::string &input)
+{
+  std::string result;
+  result.reserve(input.size()); // Reserve memory to improve performance
+  for (char c : input)
+  {
+    if (c != '\x00')
+    {
+      result += c;
+    }
+  }
+  return result;
+}
+
 /**
  * Returns the line defined by the delimiter
  */
@@ -59,9 +74,9 @@ std::string readLine(std::string &message, const std::string &delimiter = "\r\n"
 
 std::string searchLine(std::string message, std::string search_term, const std::string &delimiter = "\r\n")
 {
-  to_lower(search_term);
   std::string lower_case_message = message;
   to_lower(lower_case_message);
+  to_lower(search_term);
 
   std::size_t pos_term = lower_case_message.find(search_term);
   if (pos_term != std::string::npos)
@@ -69,7 +84,7 @@ std::string searchLine(std::string message, std::string search_term, const std::
     std::size_t pos_end_value = lower_case_message.find(delimiter, pos_term);
     if (pos_end_value != std::string::npos)
     {
-      std::string result = message.substr(pos_term + search_term.size(), pos_end_value - pos_term + search_term.size());
+      std::string result = message.substr(pos_term + search_term.size());
       std::size_t pos_specials = result.find(delimiter);
       while (pos_specials != std::string::npos)
       {
@@ -78,7 +93,7 @@ std::string searchLine(std::string message, std::string search_term, const std::
       }
       result.erase(result.begin(), std::find_if(result.begin(), result.end(), [](unsigned char ch)
                                                 { return !std::isspace(ch); }));
-      return result;
+      return removeNullCharacters(result);
     }
   }
 
@@ -200,11 +215,11 @@ void handle_endpoint_user_agent(int client_fd, std::string &message, Request &re
   std::string search_term_user = "User-Agent:";
   std::string payload = searchLine(message, search_term_user);
   std::string response = response_NOT_OK + response_HEADER_END;
+  std::cout << "PAYLOAD: " << payload << "\n";
   if (not payload.empty())
   {
     response = response_OK + writeHeaders(payload.size()) + payload;
   }
-  std::cout << "Message: " << message << "\n";
   std::cout << "handle user agent sending: " << response << "\n";
   sendResponse(client_fd, response);
 }

@@ -11,10 +11,33 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+const std::string response_OK = "HTTP/1.1 200 OK\r\n";
+const std::string response_NOT_OK = "HTTP/1.1 404 Not Found\r\n";
+const std::string response_HEADER_END = "\r\n";
+
+const std::string endpoint_ROOT = "/";
+const std::string endpoint_ECHO = "/echo/";
+const std::string endpoint_USER_AGENT = "/user-agent";
+
+enum REQUEST_TYPE
+{
+  GET = 0,
+  POST
+};
+
 enum URL_ENDPOINT
 {
   NONE = 0,
+  ROOT,
+  ECHO,
   USER_AGENT
+};
+
+struct Request
+{
+  REQUEST_TYPE type;
+  URL_ENDPOINT url_type;
+  std::string url_data;
 };
 
 void to_lower(std::string &str)
@@ -52,7 +75,7 @@ std::string searchLine(std::string message, std::string search_term, const std::
   return "";
 }
 
-std::string writeHeaders(int size_payload)
+std::string writeHeaders(int size_payload = 0)
 {
   std::string headers;
   headers += "Content-Type: text/plain\r\nContent-Length: ";
@@ -66,6 +89,138 @@ void sendResponse(int client_fd, std::string response)
   if (send(client_fd, response.c_str(), response.size(), 0) == -1)
   {
     std::cout << "Couldn't send response\n";
+  }
+}
+
+std::string readMessage(int client_fd)
+{
+  char msg_client[128] = "";
+  int msg_client_length = sizeof(msg_client);
+  bzero(&msg_client, msg_client_length);
+  if (recv(client_fd, &msg_client, msg_client_length, 0) == -1)
+  {
+    std::cout << "Couldn't receive response\n";
+    return "";
+  }
+
+  return msg_client;
+}
+
+Request read_request(std::string &message)
+{
+  std::string request_line = readLine(message);
+  Request request = {
+      REQUEST_TYPE::GET,  // type
+      URL_ENDPOINT::NONE, // url_type
+      ""                  // url_data
+  };
+
+  if (not request_line.empty())
+  {
+    int nth_element = 0;
+    char *p = strtok(request_line.data(), " ");
+    while (p != nullptr)
+    {
+      if (nth_element > 3)
+      {
+        break;
+      }
+      std::string word(p);
+      switch (nth_element)
+      {
+      case 0: // request type
+        if (word.find("POST") != std::string::npos)
+        {
+          request.type = REQUEST_TYPE::POST;
+        }
+        break;
+      case 1: // url
+        if (word == endpoint_ROOT)
+        {
+          request.url_type = URL_ENDPOINT::ROOT;
+        }
+        if (word.find(endpoint_ECHO) != std::string::npos)
+        {
+          request.url_type = URL_ENDPOINT::ECHO;
+        }
+        else if (word.find(endpoint_USER_AGENT) != std::string::npos)
+        {
+          request.url_type = URL_ENDPOINT::USER_AGENT;
+        }
+
+        request.url_data = word;
+        break;
+      case 2: // protocol
+              // pass
+        break;
+      }
+
+      message.erase(0, word.size() + 1);
+      p = strtok(message.data(), " ");
+      nth_element++;
+    }
+  }
+  return request;
+}
+
+void handle_endpoint_error(int client_fd, std::string &message, Request &request)
+{
+  std::string response = response_NOT_OK + writeHeaders();
+  sendResponse(client_fd, response);
+}
+
+void handle_endpoint_root(int client_fd, std::string &message, Request &request)
+{
+  std::string response = response_OK + writeHeaders();
+  sendResponse(client_fd, response);
+}
+
+void handle_endpoint_echo(int client_fd, std::string &message, Request &request)
+{
+
+  std::string answer = request.url_data.substr(endpoint_ECHO.size(), request.url_data.size() - endpoint_ECHO.size());
+  std::string response = response_OK + writeHeaders(answer.size()) + answer;
+  sendResponse(client_fd, response);
+}
+
+void handle_endpoint_user_agent(int client_fd, std::string &message, Request &request)
+{
+  std::string search_term_user = "User-Agent: ";
+  std::string payload = searchLine(message, search_term_user);
+  std::string response = response_NOT_OK + response_HEADER_END;
+  if (not payload.empty())
+  {
+    response = response_OK + writeHeaders(payload.size()) + payload;
+  }
+  sendResponse(client_fd, response);
+}
+
+void handle_connection(int client_fd)
+{
+  std::cout << "Handle connection client " << client_fd << "\n";
+  std::string msg_manipulator = readMessage(client_fd);
+  if (not msg_manipulator.empty())
+  {
+    Request request = read_request(msg_manipulator);
+    if (request.url_type != URL_ENDPOINT::NONE)
+    {
+      if (request.url_type == URL_ENDPOINT::ROOT)
+      {
+        handle_endpoint_root(client_fd, msg_manipulator, request);
+      }
+      else if (request.url_type == URL_ENDPOINT::ECHO)
+      {
+        handle_endpoint_echo(client_fd, msg_manipulator, request);
+      }
+      else if (request.url_type == URL_ENDPOINT::USER_AGENT)
+      {
+        handle_endpoint_user_agent(client_fd, msg_manipulator, request);
+      }
+    }
+    else
+    {
+      handle_endpoint_error(client_fd, msg_manipulator, request);
+    }
   }
 }
 
@@ -114,94 +269,105 @@ int main(int argc, char **argv)
 
   std::cout << "Waiting for a client to connect...\n";
 
-  int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
-  std::cout << "Client connected\n";
-
-  char msg_client[128] = "";
-  int msg_client_length = sizeof(msg_client);
-  bzero(&msg_client, msg_client_length);
-  if (recv(client_fd, &msg_client, msg_client_length, 0) == -1)
+  while (1)
   {
-    std::cout << "Couldn't receive response\n";
-    close(server_fd);
-    return 0;
-  }
-
-  std::string msg_manipulator = msg_client;
-
-  std::string request_line = readLine(msg_manipulator); // GET /abcdefg HTTP/1.1
-  if (request_line.empty())
-  {
-    std::cout << "Couldn't read a line\n";
-  }
-
-  std::string response_ok = "HTTP/1.1 200 OK\r\n";
-  std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n";
-  std::string end_response = "\r\n";
-
-  URL_ENDPOINT url_found = URL_ENDPOINT::NONE;
-
-  bool get_found = false;
-  std::string temp = request_line;
-  std::size_t pos = temp.find(" ");
-  while (pos != std::string::npos)
-  {
-    std::string word = temp.substr(0, pos);
-    if (word == "GET")
+    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    if (client_fd == -1)
     {
-      get_found = true;
-    }
-    else if (get_found)
-    {
-      if (word == "/")
-      {
-        std::string response = response_ok + end_response;
-        sendResponse(client_fd, response);
-      }
-      else
-      {
-        std::string path_echo = "/echo/";
-        std::string path_user_agent = "/user-agent";
-        if (std::size_t pos2 = word.find(path_echo) != std::string::npos)
-        {
-          std::string answer = word.substr(path_echo.size(), word.size() - path_echo.size());
-          std::string response = response_ok + writeHeaders(answer.size()) + answer;
-          sendResponse(client_fd, response);
-        }
-        else if (std::size_t pos2 = word.find(path_user_agent) != std::string::npos)
-        {
-          url_found = URL_ENDPOINT::USER_AGENT;
-        }
-        else
-        {
-          std::string response = response_not_ok + end_response;
-          sendResponse(client_fd, response);
-        }
-      }
-      break;
+      continue;
     }
 
-    temp = temp.substr(pos + 1, temp.size() - pos);
-    pos = temp.find(" ");
+    handle_connection(client_fd);
   }
 
-  std::string search_term_user = "User-Agent: ";
-  switch (url_found)
-  {
-  case URL_ENDPOINT::NONE:
-    std::cout << "No URL handler found\n";
-    break;
-  case URL_ENDPOINT::USER_AGENT:
-    std::cout << "URL handler found: User-Agent\n";
-    std::string payload = searchLine(msg_manipulator, search_term_user);
-    std::string response = response_not_ok + end_response;
-    if (not payload.empty())
-    {
-      response = response_ok + writeHeaders(payload.size()) + payload;
-    }
-    sendResponse(client_fd, response);
-    break;
-  }
+  // int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+  // std::cout << "Client connected\n";
+
+  // char msg_client[128] = "";
+  // int msg_client_length = sizeof(msg_client);
+  // bzero(&msg_client, msg_client_length);
+  // if (recv(client_fd, &msg_client, msg_client_length, 0) == -1)
+  // {
+  //   std::cout << "Couldn't receive response\n";
+  //   close(server_fd);
+  //   return 0;
+  // }
+
+  // std::string msg_manipulator = msg_client;
+
+  // std::string request_line = readLine(msg_manipulator); // GET /abcdefg HTTP/1.1
+  // if (request_line.empty())
+  // {
+  //   std::cout << "Couldn't read a line\n";
+  // }
+
+  // std::string response_ok = "HTTP/1.1 200 OK\r\n";
+  // std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n";
+  // std::string end_response = "\r\n";
+
+  // URL_ENDPOINT url_found = URL_ENDPOINT::NONE;
+
+  // bool get_found = false;
+  // std::string temp = request_line;
+  // std::size_t pos = temp.find(" ");
+  // while (pos != std::string::npos)
+  // {
+  //   std::string word = temp.substr(0, pos);
+  //   if (word == "GET")
+  //   {
+  //     get_found = true;
+  //   }
+  //   else if (get_found)
+  //   {
+  //     if (word == "/")
+  //     {
+  //       std::string response = response_ok + end_response;
+  //       sendResponse(client_fd, response);
+  //     }
+  //     else
+  //     {
+  //       std::string path_echo = "/echo/";
+  //       std::string path_user_agent = "/user-agent";
+  //       if (std::size_t pos2 = word.find(path_echo) != std::string::npos)
+  //       {
+  //         std::string answer = word.substr(path_echo.size(), word.size() - path_echo.size());
+  //         std::string response = response_ok + writeHeaders(answer.size()) + answer;
+  //         sendResponse(client_fd, response);
+  //       }
+  //       else if (std::size_t pos2 = word.find(path_user_agent) != std::string::npos)
+  //       {
+  //         url_found = URL_ENDPOINT::USER_AGENT;
+  //       }
+  //       else
+  //       {
+  //         std::string response = response_not_ok + end_response;
+  //         sendResponse(client_fd, response);
+  //       }
+  //     }
+  //     break;
+  //   }
+
+  //   temp = temp.substr(pos + 1, temp.size() - pos);
+  //   pos = temp.find(" ");
+  // }
+
+  // std::string search_term_user = "User-Agent: ";
+  // switch (url_found)
+  // {
+  // case URL_ENDPOINT::NONE:
+  //   std::cout << "No URL handler found\n";
+  //   break;
+  // case URL_ENDPOINT::USER_AGENT:
+  //   std::cout << "URL handler found: User-Agent\n";
+  //   std::string payload = searchLine(msg_manipulator, search_term_user);
+  //   std::string response = response_not_ok + end_response;
+  //   if (not payload.empty())
+  //   {
+  //     response = response_ok + writeHeaders(payload.size()) + payload;
+  //   }
+  //   sendResponse(client_fd, response);
+  //   break;
+  // }
 
   close(server_fd);
 

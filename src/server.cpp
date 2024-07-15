@@ -1,13 +1,28 @@
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <algorithm>
 #include <sstream>
+#include <cctype>
 #include <cstring>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+
+enum URL_ENDPOINT
+{
+  NONE = 0,
+  USER_AGENT
+};
+
+void to_lower(std::string &str)
+{
+  std::transform(str.begin(), str.end(), str.begin(),
+                 [](unsigned char c)
+                 { return std::tolower(c); });
+}
 
 /**
  * Returns the line defined by the delimiter
@@ -18,6 +33,25 @@ std::string readLine(std::string &message, const std::string &delimiter = "\r\n"
   return (p != nullptr) ? p : message.data();
 }
 
+std::string searchLine(std::string message, std::string search_term, const std::string &delimiter = "\r\n")
+{
+  to_lower(search_term);
+  char *p = strtok(message.data(), delimiter.c_str());
+  while (p != nullptr)
+  {
+    std::string word(p);
+    std::string word_search(p);
+    to_lower(word_search);
+    if (word_search.find(search_term) != std::string::npos)
+    {
+      return word.substr(search_term.size(), word.size() - search_term.size());
+    }
+    message.erase(0, word.size() + delimiter.size());
+    p = strtok(message.data(), delimiter.c_str());
+  }
+  return "";
+}
+
 std::string writeHeaders(int size_payload)
 {
   std::string headers;
@@ -25,6 +59,14 @@ std::string writeHeaders(int size_payload)
   headers += std::to_string(size_payload);
   headers += "\r\n\r\n";
   return headers;
+}
+
+void sendResponse(int client_fd, std::string response)
+{
+  if (send(client_fd, response.c_str(), response.size(), 0) == -1)
+  {
+    std::cout << "Couldn't send response\n";
+  }
 }
 
 int main(int argc, char **argv)
@@ -97,6 +139,8 @@ int main(int argc, char **argv)
   std::string response_not_ok = "HTTP/1.1 404 Not Found\r\n";
   std::string end_response = "\r\n";
 
+  URL_ENDPOINT url_found = URL_ENDPOINT::NONE;
+
   bool get_found = false;
   std::string temp = request_line;
   std::size_t pos = temp.find(" ");
@@ -112,30 +156,26 @@ int main(int argc, char **argv)
       if (word == "/")
       {
         std::string response = response_ok + end_response;
-        if (send(client_fd, response.c_str(), response.size(), 0) == -1)
-        {
-          std::cout << "Couldn't send response\n";
-        }
+        sendResponse(client_fd, response);
       }
       else
       {
         std::string path_echo = "/echo/";
+        std::string path_user_agent = "/user-agent";
         if (std::size_t pos2 = word.find(path_echo) != std::string::npos)
         {
           std::string answer = word.substr(path_echo.size(), word.size() - path_echo.size());
           std::string response = response_ok + writeHeaders(answer.size()) + answer;
-          if (send(client_fd, response.c_str(), response.size(), 0) == -1)
-          {
-            std::cout << "Couldn't send response\n";
-          }
+          sendResponse(client_fd, response);
+        }
+        else if (std::size_t pos2 = word.find(path_user_agent) != std::string::npos)
+        {
+          url_found = URL_ENDPOINT::USER_AGENT;
         }
         else
         {
           std::string response = response_not_ok + end_response;
-          if (send(client_fd, response.c_str(), response.size(), 0) == -1)
-          {
-            std::cout << "Couldn't send response\n";
-          }
+          sendResponse(client_fd, response);
         }
       }
       break;
@@ -143,6 +183,24 @@ int main(int argc, char **argv)
 
     temp = temp.substr(pos + 1, temp.size() - pos);
     pos = temp.find(" ");
+  }
+
+  std::string search_term_user = "User-Agent: ";
+  switch (url_found)
+  {
+  case URL_ENDPOINT::NONE:
+    std::cout << "No URL handler found\n";
+    break;
+  case URL_ENDPOINT::USER_AGENT:
+    std::cout << "URL handler found: User-Agent\n";
+    std::string payload = searchLine(msg_manipulator, search_term_user);
+    std::string response = response_not_ok + end_response;
+    if (not payload.empty())
+    {
+      response = response_ok + writeHeaders(payload.size()) + payload;
+    }
+    sendResponse(client_fd, response);
+    break;
   }
 
   close(server_fd);

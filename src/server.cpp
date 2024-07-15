@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include <sstream>
+#include <thread>
 #include <cctype>
 #include <cstring>
 #include <unistd.h>
@@ -78,9 +79,12 @@ std::string searchLine(std::string message, std::string search_term, const std::
 std::string writeHeaders(int size_payload = 0)
 {
   std::string headers;
-  headers += "Content-Type: text/plain\r\nContent-Length: ";
-  headers += std::to_string(size_payload);
-  headers += "\r\n\r\n";
+  if (size_payload > 0)
+  {
+    headers += "Content-Type: text/plain\r\n";
+    headers += "Content-Length: " + std::to_string(size_payload) + "\r\n";
+  }
+  headers += response_HEADER_END;
   return headers;
 }
 
@@ -165,19 +169,18 @@ Request read_request(std::string &message)
 
 void handle_endpoint_error(int client_fd, std::string &message, Request &request)
 {
-  std::string response = response_NOT_OK + response_HEADER_END;
+  std::string response = response_NOT_OK + writeHeaders();
   sendResponse(client_fd, response);
 }
 
 void handle_endpoint_root(int client_fd, std::string &message, Request &request)
 {
-  std::string response = response_OK + response_HEADER_END;
+  std::string response = response_OK + writeHeaders();
   sendResponse(client_fd, response);
 }
 
 void handle_endpoint_echo(int client_fd, std::string &message, Request &request)
 {
-
   std::string answer = request.url_data.substr(endpoint_ECHO.size(), request.url_data.size() - endpoint_ECHO.size());
   std::string response = response_OK + writeHeaders(answer.size()) + answer;
   sendResponse(client_fd, response);
@@ -269,7 +272,7 @@ int main(int argc, char **argv)
 
   std::cout << "Waiting for a client to connect...\n";
 
-  while (1)
+  while (true)
   {
     int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
     if (client_fd == -1)
@@ -277,7 +280,8 @@ int main(int argc, char **argv)
       continue;
     }
 
-    handle_connection(client_fd);
+    std::thread client(handle_connection, client_fd);
+    client.detach();
   }
 
   close(server_fd);

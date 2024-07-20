@@ -2,7 +2,8 @@
 #include <cstdlib>
 #include <string>
 #include <algorithm>
-#include <sstream>
+#include <fstream>
+#include <filesystem>
 #include <thread>
 #include <cctype>
 #include <cstring>
@@ -12,6 +13,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+namespace fs = std::filesystem;
+
 const std::string response_OK = "HTTP/1.1 200 OK\r\n";
 const std::string response_NOT_OK = "HTTP/1.1 404 Not Found\r\n";
 const std::string response_HEADER_END = "\r\n";
@@ -19,6 +22,7 @@ const std::string response_HEADER_END = "\r\n";
 const std::string endpoint_ROOT = "/";
 const std::string endpoint_ECHO = "/echo/";
 const std::string endpoint_USER_AGENT = "/user-agent";
+const std::string endpoint_FILES = "/files/";
 
 enum REQUEST_TYPE
 {
@@ -31,7 +35,8 @@ enum URL_ENDPOINT
   NONE = 0,
   ROOT,
   ECHO,
-  USER_AGENT
+  USER_AGENT,
+  FILES
 };
 
 struct Request
@@ -175,6 +180,10 @@ Request read_request(std::string &message)
         {
           request.url_type = URL_ENDPOINT::USER_AGENT;
         }
+        else if (word.find(endpoint_FILES) != std::string::npos)
+        {
+          request.url_type = URL_ENDPOINT::FILES;
+        }
 
         request.url_data = word;
         break;
@@ -215,13 +224,48 @@ void handle_endpoint_user_agent(int client_fd, std::string &message, Request &re
   std::string search_term_user = "User-Agent:";
   std::string payload = searchLine(message, search_term_user);
   std::string response = response_NOT_OK + response_HEADER_END;
-  std::cout << "PAYLOAD: " << payload << "\n";
   if (not payload.empty())
   {
     response = response_OK + writeHeaders(payload.size()) + payload;
   }
-  std::cout << "handle user agent sending: " << response << "\n";
   sendResponse(client_fd, response);
+}
+
+void handle_endpoint_files(int client_fd, std::string &message, Request &request)
+{
+  std::string file_name = request.url_data.substr(endpoint_FILES.size(), request.url_data.size() - endpoint_FILES.size());
+
+  try
+  {
+    fs::path absolute_path = fs::current_path().append("/" + file_name);
+    std::ifstream from(absolute_path);
+    std::string content;
+
+    std::cout << "path trying to open is : " << absolute_path << "\n";
+
+    if (from.is_open())
+    {
+      std::cout << "File does exist \n";
+      std::string line;
+      while (getline(from, line))
+      {
+        content += line;
+      }
+
+      std::string response = response_OK + writeHeaders(content.size()) + content;
+      sendResponse(client_fd, response);
+    }
+    else
+    {
+      std::cout << "File doesn't exist \n";
+      std::string response = response_NOT_OK + writeHeaders();
+      sendResponse(client_fd, response);
+    }
+  }
+  catch (std::exception e)
+  {
+    std::cerr << "Exception opening/reading/closing file: " << e.what() << std::endl;
+  }
 }
 
 void handle_connection(int client_fd)
@@ -244,6 +288,10 @@ void handle_connection(int client_fd)
       else if (request.url_type == URL_ENDPOINT::USER_AGENT)
       {
         handle_endpoint_user_agent(client_fd, msg_manipulator, request);
+      }
+      else if (request.url_type == URL_ENDPOINT::FILES)
+      {
+        handle_endpoint_files(client_fd, msg_manipulator, request);
       }
     }
     else

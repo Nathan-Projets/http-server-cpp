@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <fstream>
 #include <filesystem>
+#include <unordered_map>
 #include <thread>
 #include <cctype>
 #include <cstring>
@@ -23,6 +24,8 @@ const std::string endpoint_ROOT = "/";
 const std::string endpoint_ECHO = "/echo/";
 const std::string endpoint_USER_AGENT = "/user-agent";
 const std::string endpoint_FILES = "/files/";
+
+static std::string directory;
 
 enum REQUEST_TYPE
 {
@@ -45,6 +48,16 @@ struct Request
   URL_ENDPOINT url_type;
   std::string url_data;
 };
+
+enum ContentType
+{
+  TEXT_PLAIN = 0,
+  OCTET_STREAM
+};
+
+const std::unordered_map<ContentType, std::string> mapping_content_type{
+    {ContentType::TEXT_PLAIN, "text/plain"},
+    {ContentType::OCTET_STREAM, "application/octet-stream"}};
 
 void to_lower(std::string &str)
 {
@@ -105,12 +118,13 @@ std::string searchLine(std::string message, std::string search_term, const std::
   return "";
 }
 
-std::string writeHeaders(int size_payload = 0)
+std::string writeHeaders(int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
 {
   std::string headers;
   if (size_payload > 0)
   {
-    headers += "Content-Type: text/plain\r\n";
+    auto search = mapping_content_type.find(content_type);
+    headers += "Content-Type: " + search->second + "\r\n";
     headers += "Content-Length: " + std::to_string(size_payload) + "\r\n";
   }
   headers += response_HEADER_END;
@@ -237,7 +251,8 @@ void handle_endpoint_files(int client_fd, std::string &message, Request &request
 
   try
   {
-    fs::path absolute_path = fs::current_path().append("/" + file_name);
+    fs::path absolute_path(directory);
+    absolute_path.append(file_name);
     std::ifstream from(absolute_path);
     std::string content;
 
@@ -252,7 +267,7 @@ void handle_endpoint_files(int client_fd, std::string &message, Request &request
         content += line;
       }
 
-      std::string response = response_OK + writeHeaders(content.size()) + content;
+      std::string response = response_OK + writeHeaders(content.size(), ContentType::OCTET_STREAM) + content;
       sendResponse(client_fd, response);
     }
     else
@@ -306,6 +321,16 @@ int main(int argc, char **argv)
   // Flush after every std::cout / std::cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
+
+  if (argc == 3 && strcmp(argv[1], "--directory") == 0)
+  {
+    directory = argv[2];
+    directory.erase(std::remove_if(directory.begin(), directory.end(),
+                                   [](auto const &c) -> bool
+                                   { return !std::isalnum(c) && c != '/' && c != '-' && c != '.' && c != '_'; }),
+                    directory.end());
+    std::cout << "Current directory has been set to " << directory << "\n";
+  }
 
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (server_fd < 0)

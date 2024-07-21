@@ -8,6 +8,7 @@
 #include <fstream>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <thread>
 #include <cctype>
 #include <cstring>
@@ -102,13 +103,16 @@ const std::unordered_map<ContentType, std::string> mapping_content_type{
     {ContentType::TEXT_PLAIN, "text/plain"},
     {ContentType::OCTET_STREAM, "application/octet-stream"}};
 
+const std::unordered_set<std::string> mapping_encoding_supported{
+    "gzip"};
+
 const std::unordered_map<std::string, QueryMethod> mapping_method{
     {"GET", QueryMethod::GET},
     {"POST", QueryMethod::POST},
     {"PATCH", QueryMethod::PATCH},
     {"PUT", QueryMethod::PUT}};
 
-std::string write_headers(int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
+std::string write_headers(const Query &query, int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
 {
   std::string headers;
   if (size_payload > 0)
@@ -116,6 +120,11 @@ std::string write_headers(int size_payload = 0, ContentType content_type = Conte
     auto search = mapping_content_type.find(content_type);
     headers += "Content-Type: " + search->second + "\r\n";
     headers += "Content-Length: " + std::to_string(size_payload) + "\r\n";
+    auto encoding = query.Headers.find("Accept-Encoding");
+    if (encoding != query.Headers.end() and mapping_encoding_supported.find(encoding->second) != mapping_encoding_supported.end())
+    {
+      headers += "Content-Encoding: " + encoding->second + "\r\n";
+    }
   }
   headers += response_HEADER_END;
   return headers;
@@ -248,20 +257,20 @@ void parse_message(std::string message, Query &query_output, std::string delimit
 
 void handle_endpoint_error(int client_fd, std::string &message, Query &request)
 {
-  std::string response = response_NOT_OK + write_headers();
+  std::string response = response_NOT_OK + write_headers(request);
   send_response(client_fd, response);
 }
 
 void handle_endpoint_root(int client_fd, std::string &message, Query &request)
 {
-  std::string response = response_OK + write_headers();
+  std::string response = response_OK + write_headers(request);
   send_response(client_fd, response);
 }
 
 void handle_endpoint_echo(int client_fd, std::string &message, Query &request)
 {
   std::string answer = request.Queryline.Path.substr(endpoint_ECHO.size(), request.Queryline.Path.size() - endpoint_ECHO.size());
-  std::string response = response_OK + write_headers(answer.size()) + answer;
+  std::string response = response_OK + write_headers(request, answer.size()) + answer;
   send_response(client_fd, response);
 }
 
@@ -271,10 +280,10 @@ void handle_endpoint_user_agent(int client_fd, std::string &message, Query &requ
   if (user_agent != request.Headers.end())
   {
     std::string payload = "User-Agent not found.";
-    std::string response = response_NOT_OK + write_headers(payload.size()) + payload;
+    std::string response = response_NOT_OK + write_headers(request, payload.size()) + payload;
     if (not user_agent->second.empty())
     {
-      response = response_OK + write_headers(user_agent->second.size()) + user_agent->second;
+      response = response_OK + write_headers(request, user_agent->second.size()) + user_agent->second;
     }
     send_response(client_fd, response);
   }
@@ -284,7 +293,7 @@ void handle_endpoint_user_agent(int client_fd, std::string &message, Query &requ
   }
 }
 
-void read_file_response(int client_fd, std::string &file_name)
+void read_file_response(int client_fd, const Query &request, std::string &file_name)
 {
   fs::path absolute_path(directory);
   absolute_path.append(file_name);
@@ -299,12 +308,12 @@ void read_file_response(int client_fd, std::string &file_name)
       content += line;
     }
 
-    std::string response = response_OK + write_headers(content.size(), ContentType::OCTET_STREAM) + content;
+    std::string response = response_OK + write_headers(request, content.size(), ContentType::OCTET_STREAM) + content;
     send_response(client_fd, response);
   }
   else
   {
-    std::string response = response_NOT_OK + write_headers();
+    std::string response = response_NOT_OK + write_headers(request);
     send_response(client_fd, response);
   }
 }
@@ -332,7 +341,7 @@ void handle_endpoint_files(int client_fd, std::string &message, Query &request)
   {
     if (request.Queryline.Method == QueryMethod::GET)
     {
-      read_file_response(client_fd, file_name);
+      read_file_response(client_fd, request, file_name);
     }
     else if (request.Queryline.Method == QueryMethod::POST)
     {

@@ -8,7 +8,6 @@
 #include <fstream>
 #include <filesystem>
 #include <unordered_map>
-#include <unordered_set>
 #include <thread>
 #include <cctype>
 #include <cstring>
@@ -103,7 +102,7 @@ const std::unordered_map<ContentType, std::string> mapping_content_type{
     {ContentType::TEXT_PLAIN, "text/plain"},
     {ContentType::OCTET_STREAM, "application/octet-stream"}};
 
-const std::unordered_set<std::string> mapping_encoding_supported{
+const std::array<std::string, 1> encoding_supported{
     "gzip"};
 
 const std::unordered_map<std::string, QueryMethod> mapping_method{
@@ -121,9 +120,18 @@ std::string write_headers(const Query &query, int size_payload = 0, ContentType 
     headers += "Content-Type: " + search->second + "\r\n";
     headers += "Content-Length: " + std::to_string(size_payload) + "\r\n";
     auto encoding = query.Headers.find("Accept-Encoding");
-    if (encoding != query.Headers.end() and mapping_encoding_supported.find(encoding->second) != mapping_encoding_supported.end())
+    if (encoding != query.Headers.end())
     {
-      headers += "Content-Encoding: " + encoding->second + "\r\n";
+        std::cout << "List of encoding " << encoding->second << "\n";
+      for (const std::string &supported : encoding_supported)
+      {
+        std::cout << "Checking encoding " << supported << "\n";
+        if (encoding->second.find(supported) != std::string::npos)
+        {
+          headers += "Content-Encoding: " + supported + "\r\n";
+          break;
+        }
+      }
     }
   }
   headers += response_HEADER_END;

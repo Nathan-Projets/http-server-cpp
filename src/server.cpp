@@ -1,7 +1,10 @@
 #include <iostream>
 #include <cstdlib>
 #include <string>
+#include <sstream>
+#include <variant>
 #include <algorithm>
+#include <functional>
 #include <fstream>
 #include <filesystem>
 #include <unordered_map>
@@ -55,70 +58,57 @@ enum ContentType
   OCTET_STREAM
 };
 
+/**
+ * example of using variant:
+ * if (std::holds_alternative<std::string>(body.data)) {
+        std::cout << "String: " << std::get<std::string>(body.data) << std::endl;
+    }
+ */
+struct Body
+{
+  std::variant<std::string, std::unordered_map<std::string, std::string>> Data;
+};
+
+enum class QueryMethod
+{
+  UNKNOWN = 0,
+  GET,
+  POST,
+  PATCH,
+  PUT
+};
+
+struct QueryLine
+{
+  QueryMethod Method;
+  std::string Path;
+  std::string Version;
+};
+
+struct Query
+{
+  QueryLine Queryline;
+  std::unordered_map<std::string, std::string> Headers;
+  Body Payload;
+};
+
+struct Header
+{
+  std::string Key;
+  std::string Value;
+};
+
 const std::unordered_map<ContentType, std::string> mapping_content_type{
     {ContentType::TEXT_PLAIN, "text/plain"},
     {ContentType::OCTET_STREAM, "application/octet-stream"}};
 
-void to_lower(std::string &str)
-{
-  std::transform(str.begin(), str.end(), str.begin(),
-                 [](unsigned char c)
-                 { return std::tolower(c); });
-}
+const std::unordered_map<std::string, QueryMethod> mapping_method{
+    {"GET", QueryMethod::GET},
+    {"POST", QueryMethod::POST},
+    {"PATCH", QueryMethod::PATCH},
+    {"PUT", QueryMethod::PUT}};
 
-// This is needed because for god knows why codecrafters decided to include null characters in their test cases
-std::string removeNullCharacters(const std::string &input)
-{
-  std::string result;
-  result.reserve(input.size()); // Reserve memory to improve performance
-  for (char c : input)
-  {
-    if (c != '\x00')
-    {
-      result += c;
-    }
-  }
-  return result;
-}
-
-/**
- * Returns the line defined by the delimiter
- */
-std::string readLine(std::string &message, const std::string &delimiter = "\r\n")
-{
-  char *p = strtok(message.data(), delimiter.c_str());
-  return (p != nullptr) ? p : message.data();
-}
-
-std::string searchLine(std::string message, std::string search_term, const std::string &delimiter = "\r\n")
-{
-  std::string lower_case_message = message;
-  to_lower(lower_case_message);
-  to_lower(search_term);
-
-  std::size_t pos_term = lower_case_message.find(search_term);
-  if (pos_term != std::string::npos)
-  {
-    std::size_t pos_end_value = lower_case_message.find(delimiter, pos_term);
-    if (pos_end_value != std::string::npos)
-    {
-      std::string result = message.substr(pos_term + search_term.size());
-      std::size_t pos_specials = result.find(delimiter);
-      while (pos_specials != std::string::npos)
-      {
-        result.erase(pos_specials, delimiter.size());
-        pos_specials = result.find(delimiter);
-      }
-      result.erase(result.begin(), std::find_if(result.begin(), result.end(), [](unsigned char ch)
-                                                { return !std::isspace(ch); }));
-      return removeNullCharacters(result);
-    }
-  }
-
-  return "";
-}
-
-std::string writeHeaders(int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
+std::string write_headers(int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
 {
   std::string headers;
   if (size_payload > 0)
@@ -131,7 +121,7 @@ std::string writeHeaders(int size_payload = 0, ContentType content_type = Conten
   return headers;
 }
 
-void sendResponse(int client_fd, std::string response)
+void send_response(int client_fd, std::string response)
 {
   if (send(client_fd, response.c_str(), response.size(), 0) == -1)
   {
@@ -139,9 +129,9 @@ void sendResponse(int client_fd, std::string response)
   }
 }
 
-std::string readMessage(int client_fd)
+std::string read_message(int client_fd)
 {
-  char msg_client[128] = "";
+  char msg_client[256] = "";
   int msg_client_length = sizeof(msg_client);
   bzero(&msg_client, msg_client_length);
   if (recv(client_fd, &msg_client, msg_client_length, 0) == -1)
@@ -153,165 +143,251 @@ std::string readMessage(int client_fd)
   return msg_client;
 }
 
-Request read_request(std::string &message)
+// No control on the input, the predicate is that we try to parse a string following the right HTTP format "Method Path Protocol_Version"
+void parse_query_line(std::string message, QueryLine &query_line)
 {
-  std::string request_line = readLine(message);
-  Request request = {
-      REQUEST_TYPE::GET,  // type
-      URL_ENDPOINT::NONE, // url_type
-      ""                  // url_data
-  };
-
-  if (not request_line.empty())
+  if (not message.empty())
   {
-    int nth_element = 0;
-    char *p = strtok(request_line.data(), " ");
-    while (p != nullptr)
+    std::istringstream iss(message);
+    std::string method;
+    iss >> method >> query_line.Path >> query_line.Version;
+    auto method_iterator = mapping_method.find(method);
+    if (method_iterator != mapping_method.end())
     {
-      if (nth_element > 3)
-      {
-        break;
-      }
-      std::string word(p);
-      switch (nth_element)
-      {
-      case 0: // request type
-        if (word.find("POST") != std::string::npos)
-        {
-          request.type = REQUEST_TYPE::POST;
-        }
-        break;
-      case 1: // url
-        if (word == endpoint_ROOT)
-        {
-          request.url_type = URL_ENDPOINT::ROOT;
-        }
-        if (word.find(endpoint_ECHO) != std::string::npos)
-        {
-          request.url_type = URL_ENDPOINT::ECHO;
-        }
-        else if (word.find(endpoint_USER_AGENT) != std::string::npos)
-        {
-          request.url_type = URL_ENDPOINT::USER_AGENT;
-        }
-        else if (word.find(endpoint_FILES) != std::string::npos)
-        {
-          request.url_type = URL_ENDPOINT::FILES;
-        }
-
-        request.url_data = word;
-        break;
-      case 2: // protocol
-              // pass
-        break;
-      }
-
-      message.erase(0, word.size() + 1);
-      p = strtok(message.data(), " ");
-      nth_element++;
+      query_line.Method = method_iterator->second;
     }
   }
-  return request;
 }
 
-void handle_endpoint_error(int client_fd, std::string &message, Request &request)
+void parse_body(std::string message, const Query &query, Body &body)
 {
-  std::string response = response_NOT_OK + writeHeaders();
-  sendResponse(client_fd, response);
-}
-
-void handle_endpoint_root(int client_fd, std::string &message, Request &request)
-{
-  std::string response = response_OK + writeHeaders();
-  sendResponse(client_fd, response);
-}
-
-void handle_endpoint_echo(int client_fd, std::string &message, Request &request)
-{
-  std::string answer = request.url_data.substr(endpoint_ECHO.size(), request.url_data.size() - endpoint_ECHO.size());
-  std::string response = response_OK + writeHeaders(answer.size()) + answer;
-  sendResponse(client_fd, response);
-}
-
-void handle_endpoint_user_agent(int client_fd, std::string &message, Request &request)
-{
-  std::string search_term_user = "User-Agent:";
-  std::string payload = searchLine(message, search_term_user);
-  std::string response = response_NOT_OK + response_HEADER_END;
-  if (not payload.empty())
+  auto content_type = query.Headers.find("Content-Type");
+  if (content_type != query.Headers.end())
   {
-    response = response_OK + writeHeaders(payload.size()) + payload;
-  }
-  sendResponse(client_fd, response);
-}
-
-void handle_endpoint_files(int client_fd, std::string &message, Request &request)
-{
-  std::string file_name = request.url_data.substr(endpoint_FILES.size(), request.url_data.size() - endpoint_FILES.size());
-
-  try
-  {
-    fs::path absolute_path(directory);
-    absolute_path.append(file_name);
-    std::ifstream from(absolute_path);
-    std::string content;
-
-    std::cout << "path trying to open is : " << absolute_path << "\n";
-
-    if (from.is_open())
+    if (content_type->second == mapping_content_type.at(ContentType::TEXT_PLAIN) || content_type->second == mapping_content_type.at(ContentType::OCTET_STREAM))
     {
-      std::cout << "File does exist \n";
-      std::string line;
-      while (getline(from, line))
-      {
-        content += line;
-      }
-
-      std::string response = response_OK + writeHeaders(content.size(), ContentType::OCTET_STREAM) + content;
-      sendResponse(client_fd, response);
+      body.Data = message;
     }
     else
     {
-      std::cout << "File doesn't exist \n";
-      std::string response = response_NOT_OK + writeHeaders();
-      sendResponse(client_fd, response);
+      std::cout << "Content-Type " << content_type->second << " is not supported yet.\n";
+    }
+  }
+}
+
+void parse_message(std::string message, Query &query_output, std::string delimiter = "\r\n")
+{
+  if (not message.empty())
+  {
+    std::string headers, body;
+    std::string delimiter_header_body = "\r\n\r\n";
+    std::size_t search = message.find(delimiter_header_body);
+    if (search != std::string::npos)
+    {
+      headers = message.substr(0, search);
+      body = message.substr(search + delimiter_header_body.size());
+    }
+
+    // parse request line
+    search = headers.find(delimiter);
+    if (search != std::string::npos)
+    {
+      parse_query_line(headers.substr(0, search), query_output.Queryline);
+      headers.erase(0, search + delimiter.size());
+    }
+
+    // parse headers
+    search = headers.find(delimiter);
+    while (search != std::string::npos and headers.size() > 0)
+    {
+      Header header;
+      std::string header_string = headers.substr(0, search);
+      size_t colon_pos = header_string.find(":");
+      if (colon_pos != std::string::npos)
+      {
+        // Determine if there is a space after the colon
+        size_t value_start_pos = colon_pos + 1;
+        if (header_string[colon_pos + 1] == ' ')
+        {
+          value_start_pos++;
+        }
+
+        header.Key = header_string.substr(0, colon_pos);
+        header.Value = header_string.substr(value_start_pos);
+        query_output.Headers[header.Key] = header.Value;
+      }
+
+      headers.erase(0, search + delimiter.size());
+      search = headers.find(delimiter);
+    }
+
+    // Handle the last header if there's no trailing delimiter
+    if (!headers.empty())
+    {
+      Header header;
+      size_t colon_pos = headers.find(':');
+      if (colon_pos != std::string::npos)
+      {
+        // Determine if there is a space after the colon
+        size_t value_start_pos = colon_pos + 1;
+        if (headers[colon_pos + 1] == ' ')
+        {
+          value_start_pos++;
+        }
+
+        header.Key = headers.substr(0, colon_pos);
+        header.Value = headers.substr(value_start_pos);
+        query_output.Headers[header.Key] = header.Value;
+      }
+    }
+
+    // parse body
+    parse_body(body, query_output, query_output.Payload);
+  }
+}
+
+void handle_endpoint_error(int client_fd, std::string &message, Query &request)
+{
+  std::string response = response_NOT_OK + write_headers();
+  send_response(client_fd, response);
+}
+
+void handle_endpoint_root(int client_fd, std::string &message, Query &request)
+{
+  std::string response = response_OK + write_headers();
+  send_response(client_fd, response);
+}
+
+void handle_endpoint_echo(int client_fd, std::string &message, Query &request)
+{
+  std::string answer = request.Queryline.Path.substr(endpoint_ECHO.size(), request.Queryline.Path.size() - endpoint_ECHO.size());
+  std::string response = response_OK + write_headers(answer.size()) + answer;
+  send_response(client_fd, response);
+}
+
+void handle_endpoint_user_agent(int client_fd, std::string &message, Query &request)
+{
+  auto user_agent = request.Headers.find("User-Agent");
+  if (user_agent != request.Headers.end())
+  {
+    std::string payload = "User-Agent not found.";
+    std::string response = response_NOT_OK + write_headers(payload.size()) + payload;
+    if (not user_agent->second.empty())
+    {
+      response = response_OK + write_headers(user_agent->second.size()) + user_agent->second;
+    }
+    send_response(client_fd, response);
+  }
+  else
+  {
+    handle_endpoint_error(client_fd, message, request);
+  }
+}
+
+void read_file_response(int client_fd, std::string &file_name)
+{
+  fs::path absolute_path(directory);
+  absolute_path.append(file_name);
+  std::ifstream from(absolute_path);
+  std::string content;
+
+  if (from.is_open())
+  {
+    std::string line;
+    while (getline(from, line))
+    {
+      content += line;
+    }
+
+    std::string response = response_OK + write_headers(content.size(), ContentType::OCTET_STREAM) + content;
+    send_response(client_fd, response);
+  }
+  else
+  {
+    std::string response = response_NOT_OK + write_headers();
+    send_response(client_fd, response);
+  }
+}
+
+void write_file_response(int client_fd, std::string &file_name, std::string &content)
+{
+  fs::path absolute_path(directory);
+  absolute_path.append(file_name);
+  std::ofstream to(absolute_path);
+
+  if (to.is_open())
+  {
+    to << content;
+  }
+
+  std::string response = "HTTP/1.1 201 Created\r\n\r\n";
+  send_response(client_fd, response);
+}
+
+void handle_endpoint_files(int client_fd, std::string &message, Query &request)
+{
+  std::string file_name = request.Queryline.Path.substr(endpoint_FILES.size(), request.Queryline.Path.size() - endpoint_FILES.size());
+
+  try
+  {
+    if (request.Queryline.Method == QueryMethod::GET)
+    {
+      read_file_response(client_fd, file_name);
+    }
+    else if (request.Queryline.Method == QueryMethod::POST)
+    {
+      if (std::holds_alternative<std::string>(request.Payload.Data))
+      {
+        write_file_response(client_fd, file_name, std::get<std::string>(request.Payload.Data));
+      }
+      else
+      {
+        handle_endpoint_error(client_fd, message, request);
+      }
     }
   }
   catch (std::exception e)
   {
     std::cerr << "Exception opening/reading/closing file: " << e.what() << std::endl;
+    handle_endpoint_error(client_fd, message, request);
   }
 }
+
+const std::unordered_map<std::string, std::function<void(int, std::string &, Query &)>> mapping_handling_endpoint{
+    {endpoint_ROOT, handle_endpoint_root},
+    {endpoint_ECHO, handle_endpoint_echo},
+    {endpoint_USER_AGENT, handle_endpoint_user_agent},
+    {endpoint_FILES, handle_endpoint_files},
+};
 
 void handle_connection(int client_fd)
 {
   std::cout << "Handle connection client " << client_fd << "\n";
-  std::string msg_manipulator = readMessage(client_fd);
+  std::string msg_manipulator = read_message(client_fd);
   if (not msg_manipulator.empty())
   {
-    Request request = read_request(msg_manipulator);
-    if (request.url_type != URL_ENDPOINT::NONE)
+    Query query;
+    parse_message(msg_manipulator, query);
+
+    bool endpoint_found = false;
+    for (auto [path, handler] : mapping_handling_endpoint)
     {
-      if (request.url_type == URL_ENDPOINT::ROOT)
+      std::size_t searchh = query.Queryline.Path.find(path);
+      if (searchh != std::string::npos and searchh == 0)
       {
-        handle_endpoint_root(client_fd, msg_manipulator, request);
-      }
-      else if (request.url_type == URL_ENDPOINT::ECHO)
-      {
-        handle_endpoint_echo(client_fd, msg_manipulator, request);
-      }
-      else if (request.url_type == URL_ENDPOINT::USER_AGENT)
-      {
-        handle_endpoint_user_agent(client_fd, msg_manipulator, request);
-      }
-      else if (request.url_type == URL_ENDPOINT::FILES)
-      {
-        handle_endpoint_files(client_fd, msg_manipulator, request);
+        if (path == "/" and query.Queryline.Path != path)
+        {
+          continue;
+        }
+        handler(client_fd, msg_manipulator, query);
+        endpoint_found = true;
+        break;
       }
     }
-    else
+
+    if (not endpoint_found)
     {
-      handle_endpoint_error(client_fd, msg_manipulator, request);
+      handle_endpoint_error(client_fd, msg_manipulator, query);
     }
   }
 }

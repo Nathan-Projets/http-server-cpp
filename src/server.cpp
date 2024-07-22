@@ -16,6 +16,10 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <zlib.h>
+#include <assert.h>
+
+#define CHUNK 16384
 
 namespace fs = std::filesystem;
 
@@ -111,6 +115,60 @@ const std::unordered_map<std::string, QueryMethod> mapping_method{
     {"PATCH", QueryMethod::PATCH},
     {"PUT", QueryMethod::PUT}};
 
+std::string compress_string(const std::string &content, int compression_level = Z_BEST_COMPRESSION)
+{
+  z_stream zs;
+  memset(&zs, 0, sizeof(zs));
+  if (deflateInit2(&zs, compression_level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+  {
+    throw std::runtime_error("deflateInit2 failed while compressing.");
+  }
+  zs.next_in = (Bytef *)content.data();
+  zs.avail_in = content.size();
+  int ret;
+  char outbuffer[32768];
+  std::string outstring;
+  do
+  {
+    zs.next_out = reinterpret_cast<Bytef *>(outbuffer);
+    zs.avail_out = sizeof(outbuffer);
+    ret = deflate(&zs, Z_FINISH);
+    if (outstring.size() < zs.total_out)
+    {
+      outstring.append(outbuffer, zs.total_out - outstring.size());
+    }
+  } while (ret == Z_OK);
+
+  deflateEnd(&zs);
+
+  if (ret != Z_STREAM_END)
+  {
+    throw std::runtime_error("Exception during zlib compression: (" + std::to_string(ret) + ") " + zs.msg);
+  }
+  return outstring;
+}
+
+std::string write_body(const Query &query, std::string &content)
+{
+  try
+  {
+    auto encoding = query.Headers.find("Accept-Encoding");
+    if (encoding != query.Headers.end())
+    {
+      return compress_string(content);
+    }
+    else
+    {
+      return content;
+    }
+  }
+  catch (std::runtime_error err)
+  {
+    std::cout << "Problem happened in writing body: " << err.what() << "\n";
+  }
+  return "";
+}
+
 std::string write_headers(const Query &query, int size_payload = 0, ContentType content_type = ContentType::TEXT_PLAIN)
 {
   std::string headers;
@@ -122,7 +180,7 @@ std::string write_headers(const Query &query, int size_payload = 0, ContentType 
     auto encoding = query.Headers.find("Accept-Encoding");
     if (encoding != query.Headers.end())
     {
-        std::cout << "List of encoding " << encoding->second << "\n";
+      std::cout << "List of encoding " << encoding->second << "\n";
       for (const std::string &supported : encoding_supported)
       {
         std::cout << "Checking encoding " << supported << "\n";
@@ -278,7 +336,8 @@ void handle_endpoint_root(int client_fd, std::string &message, Query &request)
 void handle_endpoint_echo(int client_fd, std::string &message, Query &request)
 {
   std::string answer = request.Queryline.Path.substr(endpoint_ECHO.size(), request.Queryline.Path.size() - endpoint_ECHO.size());
-  std::string response = response_OK + write_headers(request, answer.size()) + answer;
+  std::string body = write_body(request, answer);
+  std::string response = response_OK + write_headers(request, body.size()) + body;
   send_response(client_fd, response);
 }
 
